@@ -618,11 +618,14 @@ def _read_last_event_id(path: str) -> str:
 
 
 def _work_env_path() -> Path:
+    env_home = os.getenv("HERMES_HOME", "").strip()
+    if env_home:
+        return Path(env_home) / ".env.work"
     try:
         from hermes_constants import get_hermes_home
         return get_hermes_home() / ".env.work"
     except Exception:
-        return Path(os.getenv("HERMES_HOME", "/opt/data")) / ".env.work"
+        return Path("/opt/data") / ".env.work"
 
 
 def _dotenv_values(path: Path) -> Dict[str, str]:
