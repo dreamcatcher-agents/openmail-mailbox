@@ -52,15 +52,15 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform(PLATFORM_NAME))
         extra = config.extra or {}
-        self._api_key = str(extra.get("api_key") or os.getenv("OPENMAIL_API_KEY", "")).strip()
-        self._ws_url = str(extra.get("ws_url") or os.getenv("OPENMAIL_WS_URL", DEFAULT_WS_URL)).strip()
+        self._api_key = str(extra.get("api_key") or _env_or_work("OPENMAIL_API_KEY", "")).strip()
+        self._ws_url = str(extra.get("ws_url") or _env_or_work("OPENMAIL_WS_URL", DEFAULT_WS_URL)).strip()
         self._inbox_ids = _csv_or_list(
             extra.get("inbox_ids")
             or extra.get("inboxes")
-            or os.getenv("OPENMAIL_INBOX_ID", "")
-            or os.getenv("OPENMAIL_INBOX_IDS", "")
+            or _env_or_work("OPENMAIL_INBOX_ID", "")
+            or _env_or_work("OPENMAIL_INBOX_IDS", "")
         )
-        self._address = str(extra.get("address") or os.getenv("OPENMAIL_ADDRESS", "")).strip()
+        self._address = str(extra.get("address") or _env_or_work("OPENMAIL_ADDRESS", "")).strip()
         self._event_types = _csv_or_list(extra.get("event_types")) or list(DEFAULT_EVENT_TYPES)
         self._last_event_id_path = str(
             extra.get("last_event_id_path")
@@ -617,6 +617,40 @@ def _read_last_event_id(path: str) -> str:
         return ""
 
 
+def _work_env_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / ".env.work"
+    except Exception:
+        return Path(os.getenv("HERMES_HOME", "/opt/data")) / ".env.work"
+
+
+def _dotenv_values(path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return values
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _env_or_work(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+    return _dotenv_values(_work_env_path()).get(name, default)
+
+
 def _write_last_event_id(path: str, event_id: str) -> None:
     if not path or not event_id:
         return
@@ -651,16 +685,16 @@ def check_requirements() -> bool:
 
 def validate_config(config: PlatformConfig) -> bool:
     extra = config.extra or {}
-    api_key = str(extra.get("api_key") or os.getenv("OPENMAIL_API_KEY", "")).strip()
-    inboxes = _csv_or_list(extra.get("inbox_ids") or extra.get("inboxes") or os.getenv("OPENMAIL_INBOX_ID", ""))
+    api_key = str(extra.get("api_key") or _env_or_work("OPENMAIL_API_KEY", "")).strip()
+    inboxes = _csv_or_list(extra.get("inbox_ids") or extra.get("inboxes") or _env_or_work("OPENMAIL_INBOX_ID", ""))
     return bool(api_key and inboxes)
 
 
 def _env_enablement() -> dict | None:
-    inboxes = _csv_or_list(os.getenv("OPENMAIL_INBOX_ID", "") or os.getenv("OPENMAIL_INBOX_IDS", ""))
-    if not os.getenv("OPENMAIL_API_KEY") or not inboxes:
+    inboxes = _csv_or_list(_env_or_work("OPENMAIL_INBOX_ID", "") or _env_or_work("OPENMAIL_INBOX_IDS", ""))
+    if not _env_or_work("OPENMAIL_API_KEY", "") or not inboxes:
         return None
-    address = os.getenv("OPENMAIL_ADDRESS", "").strip()
+    address = _env_or_work("OPENMAIL_ADDRESS", "").strip()
     return {
         "inbox_ids": inboxes,
         "address": address,

@@ -10,7 +10,7 @@ The plugin opens an outbound WebSocket to OpenMail at gateway startup, subscribe
 hermes plugins install dreamcatcher-agents/openmail-mailbox --enable
 ```
 
-Configure `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS` in the target Hermes runtime environment or set `platforms.openmail_mailbox.extra.inbox_ids`/`address` in `config.yaml`, then restart the gateway.
+Configure `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS` in `/opt/data/.env.work` (or the target Hermes runtime environment) and set `platforms.openmail_mailbox.extra.inbox_ids`/`address` in `config.yaml`, then restart the gateway. The adapter reads `/opt/data/.env.work` directly so OpenMail secrets do not need to be copied into `config.yaml`.
 
 ## Runtime shape
 
