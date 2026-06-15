@@ -1,0 +1,20 @@
+name: openmail-mailbox
+label: OpenMail Mailbox
+kind: platform
+version: 0.1.0
+description: >
+  Outbound-only OpenMail WebSocket mailbox adapter for Hermes gateway persona agents.
+  It subscribes to OpenMail message.received events, dispatches minimal metadata
+  notifications into a stable mailbox session, and suppresses platform final sends
+  so actual outbound email goes through the OpenMail CLI/skill.
+author: Hermes Agent
+requires_env:
+  - name: OPENMAIL_API_KEY
+    description: OpenMail API key used for WebSocket event subscription and CLI operations
+    prompt: OpenMail API key
+    password: true
+  - name: OPENMAIL_INBOX_ID
+    description: OpenMail inbox UUID to watch
+    prompt: OpenMail inbox ID
+    password: false
+hooks: []

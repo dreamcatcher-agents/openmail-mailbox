@@ -1,0 +1,1 @@
+"""OpenMail mailbox Hermes plugin."""
