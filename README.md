@@ -22,6 +22,7 @@ Configure `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS` in `/o
 - Default session id: `openmail-mailbox:<address-local-part>` when address is known
 - Watched event classes: `message.received`
 - Auto skill: `openmail`
+- Platform lifecycle: accepts Hermes `connect(*, is_reconnect=False)` startup/reconnect calls
 
 ## Verification
 

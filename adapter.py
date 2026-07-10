@@ -101,7 +101,13 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
         # adapter. There is no end-user identity for gateway allowlists to check.
         return True
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """Start the outbound watcher under the current Hermes platform contract.
+
+        ``is_reconnect`` is accepted for compatibility with Hermes gateways that
+        distinguish startup from reconnect attempts. The adapter owns its own
+        WebSocket reconnect loop, so no separate behavior is needed here.
+        """
         if not WEBSOCKETS_AVAILABLE:
             self._set_fatal_error(
                 "openmail_websockets_missing",
