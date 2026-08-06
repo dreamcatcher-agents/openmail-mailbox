@@ -19,13 +19,24 @@ Official upstream skill/docs:
 - CLI package: `@openmail/cli`
 - Docs: `https://docs.openmail.sh/quickstart` and `https://docs.openmail.sh/api-reference/introduction`
 
-Official one-command setup for Claude Code is:
+Outside a managed Dreamcatcher runtime, follow the official installation and
+setup documentation above. In the managed Hermes fleet, `openmail` is an
+image-owned command at `/usr/local/bin/openmail`, backed by the exact
+`@openmail/cli` package lock accepted by the instance release. The wrapper loads
+only the agreed `OPENMAIL_*` variables from `/opt/data/.env.work` before calling
+that pinned binary. Do not bypass it with `npx`, and do not run `openmail
+update`; a CLI or skill update must be qualified in the runtime image and then
+rippled as one immutable candidate.
 
-```bash
-npx @openmail/cli setup --agent claude-code
-```
+The CLI and this skill are fleet-common tools, not a mailbox-provider switch.
+On an AgentMail-backed runtime, preserve its AgentMail plugin, credentials,
+inbox, and subscription. Do not add OpenMail credentials, enable the OpenMail
+watcher, or migrate mail merely because the `openmail` command and skill are
+present.
 
-In this Hermes environment, `/opt/data/.env.work` is the durable source for operator/CLI credentials. The `/opt/data/home/bin/openmail` wrapper loads OpenMail variables from `/opt/data/.env.work` before delegating to `npx -y @openmail/cli`; after saving or rotating a key, run the CLI setup/status path so the CLI writes its own durable state under the Hermes home (normally `/opt/data/home/.openmail-cli/state.json`).
+After saving or rotating a key, run the CLI setup/status path so the CLI writes
+its own durable state under the Hermes home (normally
+`/opt/data/home/.openmail-cli/state.json`).
 
 Check whether setup has already been done without printing secrets:
 
@@ -63,12 +74,17 @@ openmail send --to "recipient@example.com" --subject "Re: Original subject" --th
 ```
 
 ```bash
-openmail send --to "recipient@example.com" --subject "Report" --body "See attached." --body-html "<p>See attached.</p>" --attach ./report.pdf
+openmail send --to "recipient@example.com" --subject "Report" --body "<p>See attached.</p>" --attach ./report.pdf
 ```
 
 Add `--attach <path>` to attach files (repeatable). The response includes
 `messageId` and `threadId` — store `threadId` to continue the conversation
-later. Current CLI versions may require `--subject` even when replying with `--thread-id`; pass a harmless `Re: <original subject>` value. Subject is ignored by the API/threading semantics when replying in a thread.
+later. The accepted 0.5.0 CLI contract requires `--body`; that flag accepts
+plain text or HTML. Do not rely on a separate HTML-body flag: it is absent from
+the 0.5.0 help contract and does not replace required `--body`. Current CLI
+versions may require `--subject` even when replying with `--thread-id`; pass a
+harmless `Re: <original subject>` value. Subject is ignored by the API/threading
+semantics when replying in a thread.
 
 **Always reply in the existing thread.** When the user asks you to reply
 to an email, look up the thread with `openmail inbox` or
@@ -196,12 +212,18 @@ Reference: https://docs.openmail.sh/api-reference
 
 ## Hermes/Dreamcatcher pilot notes
 
-When using OpenMail inside Hermes, prefer OpenMail's official CLI (`@openmail/cli`) and official docs before designing a custom MCP server. This local skill is derived from OpenMail's official MIT-licensed `openmailsh/skills` skill and then adapted for Hermes persistence, wrapper, and Dreamcatcher migration notes. A thin local wrapper may be useful only to load persisted Hermes env files and then delegate to `npx -y @openmail/cli`.
+When using OpenMail inside Hermes, prefer OpenMail's official CLI (`@openmail/cli`) and official docs before designing a custom MCP server. This local skill is derived from OpenMail's official MIT-licensed `openmailsh/skills` skill and then adapted for Hermes persistence, wrapper, and Dreamcatcher migration notes. The managed fleet wrapper loads a strict allowlist of persisted OpenMail env keys and delegates to the image-pinned CLI; it must not resolve packages from the network during an email task.
 
 Recommended persisted files for this environment:
 
 - `/opt/data/.env.work`: durable `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS`
-- `/opt/data/home/bin/openmail`: optional wrapper that loads the durable env file and execs the OpenMail CLI
+- `/usr/local/bin/openmail`: image-managed wrapper for the release-pinned OpenMail CLI
+
+Treat the CLI, this applied skill, and the watcher plugin as separate release
+surfaces. The plugin may be updated independently for inbound protocol fixes,
+but CLI/skill changes are accepted only after their pinned versions and command
+contract pass the instance-spec checks. Never use `openmail update` as an
+in-place fleet mutation.
 
 Stale runtime-env pitfall: long-lived Hermes gateway/tool processes can keep old `OPENMAIL_INBOX_ID` / `OPENMAIL_ADDRESS` values in their inherited environment even after `/opt/data/.env.work` is updated. For one-off scripts, explicitly override `OPENMAIL_*` from `/opt/data/.env.work` instead of using `os.environ.setdefault` / `if (!process.env[k])`. For the live mailbox watcher, restart the gateway after changing the canonical OpenMail inbox so the process env, config, and plugin subscription converge.
 

@@ -1,7 +1,7 @@
 name: openmail-mailbox
 label: OpenMail Mailbox
 kind: platform
-version: 0.1.1
+version: 0.1.2
 description: >
   Outbound-only OpenMail WebSocket mailbox adapter for Hermes gateway persona agents.
   It subscribes to OpenMail message.received events, dispatches minimal metadata

@@ -28,6 +28,16 @@ def test_connect_accepts_keyword_only_is_reconnect_with_false_default() -> None:
     assert default.value is False
 
 
-def test_manifest_version_tracks_platform_contract_update() -> None:
+def test_manifest_version_tracks_packaging_contract_update() -> None:
     manifest = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
-    assert "version: 0.1.1" in manifest
+    assert "version: 0.1.2" in manifest
+
+
+def test_bundled_skill_uses_the_managed_cli_contract() -> None:
+    skill = (ROOT / "skills" / "email" / "openmail" / "SKILL.md").read_text(encoding="utf-8")
+    assert "/usr/local/bin/openmail" in skill
+    assert "image-pinned CLI" in skill
+    assert "Never use `openmail update`" in skill
+    assert "/opt/data/home/bin/openmail" not in skill
+    assert "npx -y @openmail/cli" not in skill
+    assert "--body-html" not in skill
