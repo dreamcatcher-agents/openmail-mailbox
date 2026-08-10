@@ -37,6 +37,18 @@ Configure `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS` in `/o
 - Watched event classes: `message.received`
 - Auto skill: `openmail`
 - Platform lifecycle: accepts Hermes `connect(*, is_reconnect=False)` startup/reconnect calls
+- Provider cursor: `/opt/data/openmail-mailbox/last_event_id.txt` by default
+- Crash-safe pending journal: `/opt/data/openmail-mailbox/pending_notifications.json` by default
+
+The adapter commits each redacted notification to the owner-only pending journal
+before advancing the provider replay cursor. A busy Hermes session may keep the
+notification queued in memory, but the journal remains its restart owner until
+the corresponding agent turn completes successfully. Failed or cancelled turns
+remain replayable; after a crash the adapter reloads the journal before opening
+the WebSocket. Because external email effects cannot be transacted with the
+local journal, a crash after an outbound effect but before local acknowledgement
+may replay the notification; the mailbox prompt therefore requires inspecting
+current thread state before sending.
 
 ## Verification
 

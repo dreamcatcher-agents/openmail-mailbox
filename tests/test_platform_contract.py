@@ -30,7 +30,7 @@ def test_connect_accepts_keyword_only_is_reconnect_with_false_default() -> None:
 
 def test_manifest_version_tracks_packaging_contract_update() -> None:
     manifest = (ROOT / "plugin.yaml").read_text(encoding="utf-8")
-    assert "version: 0.1.2" in manifest
+    assert "version: 0.1.3" in manifest
 
 
 def test_bundled_skill_uses_the_managed_cli_contract() -> None:

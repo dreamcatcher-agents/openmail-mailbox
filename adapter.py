@@ -30,7 +30,14 @@ except ImportError:  # pragma: no cover - dependency probe
     WEBSOCKETS_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, build_session_key
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    ProcessingOutcome,
+    SendResult,
+    build_session_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +48,7 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 DEDUP_MAX_SIZE = 2000
 DEFAULT_NOTIFICATION_MIN_INTERVAL_SECONDS = 10.0
 DEFAULT_NOTIFICATION_BATCH_WINDOW_SECONDS = 1.0
+DEFAULT_PENDING_JOURNAL_PATH = "/opt/data/openmail-mailbox/pending_notifications.json"
 SAFE_BUSY_INPUT_MODES = {"queue", "steer"}
 
 
@@ -66,6 +74,11 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             extra.get("last_event_id_path")
             or os.getenv("OPENMAIL_MAILBOX_LAST_EVENT_ID_PATH", "")
         ).strip()
+        self._pending_journal_path = str(
+            extra.get("pending_journal_path")
+            or os.getenv("OPENMAIL_MAILBOX_PENDING_JOURNAL_PATH", "")
+            or DEFAULT_PENDING_JOURNAL_PATH
+        ).strip()
         self._session_chat_id = str(
             extra.get("session_chat_id")
             or _default_session_chat_id(self._address, self._inbox_ids)
@@ -90,6 +103,7 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
         self._dispatch_lock = asyncio.Lock()
         self._pending_lock = asyncio.Lock()
         self._pending_notifications: List[Dict[str, Any]] = []
+        self._journal_notifications: Dict[str, Dict[str, Any]] = {}
         self._flush_task: Optional[asyncio.Task] = None
         self._stream_task: Optional[asyncio.Task] = None
         self._seen_event_ids: Dict[str, float] = {}
@@ -142,11 +156,29 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             )
             return False
 
+        try:
+            recovered = _read_pending_journal(self._pending_journal_path)
+        except Exception as exc:
+            self._set_fatal_error(
+                "openmail_pending_journal_unreadable",
+                f"OpenMail pending-notification journal is unreadable: {exc}",
+                retryable=False,
+            )
+            return False
+
         self._running = True
+        async with self._pending_lock:
+            self._journal_notifications = {
+                str(notification["event_id"]): notification
+                for notification in recovered
+            }
+            self._pending_notifications = list(self._journal_notifications.values())
+            if self._pending_notifications:
+                self._ensure_flush_task_locked()
         self._stream_task = asyncio.create_task(self._run_forever(), name="openmail-mailbox-ws")
         self._mark_connected()
         logger.info(
-            "[%s] Started outbound OpenMail WebSocket task for %d inbox(es), event_types=%s, session_chat_id=%s, address=%s, busy_input_mode=%s, notification_min_interval=%.1fs, batch_window=%.1fs, wait_for_idle_when_unsafe_busy=%s",
+            "[%s] Started outbound OpenMail WebSocket task for %d inbox(es), event_types=%s, session_chat_id=%s, address=%s, busy_input_mode=%s, notification_min_interval=%.1fs, batch_window=%.1fs, wait_for_idle_when_unsafe_busy=%s, recovered_pending=%d, pending_journal=%s",
             self.name,
             len(self._inbox_ids),
             ",".join(self._event_types),
@@ -156,6 +188,8 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             self._notification_min_interval_seconds,
             self._notification_batch_window_seconds,
             self._wait_for_idle_when_unsafe_busy,
+            len(recovered),
+            self._pending_journal_path,
         )
         return True
 
@@ -248,27 +282,49 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             logger.debug("[%s] Ignoring OpenMail event_type=%s", self.name, event_type)
             return
         event_id = str(data.get("event_id") or data.get("id") or "") or uuid.uuid4().hex
-        if self._is_duplicate(event_id):
+        if self._was_seen(event_id):
             logger.debug("[%s] Duplicate OpenMail event %s skipped", self.name, event_id)
             return
-        await self._queue_mail_notification(data)
-        _write_last_event_id(self._last_event_id_path, event_id)
 
-    async def _queue_mail_notification(self, data: Dict[str, Any]) -> None:
+        # The provider cursor may advance only after the notification has a
+        # crash-safe local replay owner.  If journal persistence fails this
+        # exception tears down the WebSocket generation; reconnect then asks the
+        # provider to replay from the previous cursor instead of losing mail.
+        added = await self._queue_mail_notification(data, event_id=event_id)
+        self._remember_seen(event_id)
+        _write_last_event_id(self._last_event_id_path, event_id)
+        if not added:
+            logger.debug(
+                "[%s] OpenMail event %s was already present in the durable pending journal",
+                self.name,
+                event_id,
+            )
+
+    async def _queue_mail_notification(self, data: Dict[str, Any], *, event_id: str) -> bool:
         notification = _mail_notification_from_event(data)
+        notification["event_id"] = event_id
+        notification["raw"]["event_id"] = event_id
         async with self._pending_lock:
+            if event_id in self._journal_notifications:
+                return False
+            updated = dict(self._journal_notifications)
+            updated[event_id] = notification
+            _write_pending_journal(self._pending_journal_path, list(updated.values()))
+            self._journal_notifications = updated
             self._pending_notifications.append(notification)
             pending_count = len(self._pending_notifications)
             self._ensure_flush_task_locked()
         logger.info(
-            "[%s] Queued OpenMail %s notification for mailbox batch: inbox=%s thread=%s message=%s pending=%d",
+            "[%s] Durably queued OpenMail %s notification for mailbox batch: event=%s inbox=%s thread=%s message=%s pending=%d",
             self.name,
             notification["kind"],
+            event_id,
             notification["inbox_id"],
             notification["thread_id"],
             notification["message_id"],
             pending_count,
         )
+        return True
 
     def _ensure_flush_task_locked(self) -> None:
         if self._flush_task is None or self._flush_task.done():
@@ -406,15 +462,69 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
                 last_log = now
             await asyncio.sleep(1.0)
 
-    def _is_duplicate(self, event_id: str) -> bool:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        await super().on_processing_complete(event, outcome)
+        raw = event.raw_message if isinstance(event.raw_message, dict) else {}
+        if raw.get("event_type") != "openmail.mailbox.batch":
+            return
+        event_ids = [str(value) for value in raw.get("event_ids") or [] if str(value)]
+        if not event_ids:
+            logger.warning("[%s] Processed OpenMail batch has no event ids; keeping durable journal unchanged", self.name)
+            return
+
+        if outcome == ProcessingOutcome.SUCCESS:
+            async with self._pending_lock:
+                updated = {
+                    key: notification
+                    for key, notification in self._journal_notifications.items()
+                    if key not in event_ids
+                }
+                try:
+                    _write_pending_journal(self._pending_journal_path, list(updated.values()))
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Could not acknowledge processed OpenMail batch in durable journal; it remains replayable: %s",
+                        self.name,
+                        exc,
+                    )
+                    return
+                self._journal_notifications = updated
+            logger.info(
+                "[%s] Acknowledged %d processed OpenMail event(s) in durable pending journal",
+                self.name,
+                len(event_ids),
+            )
+            return
+
+        async with self._pending_lock:
+            pending_ids = {
+                str(notification.get("event_id") or "")
+                for notification in self._pending_notifications
+            }
+            retry = [
+                self._journal_notifications[event_id]
+                for event_id in event_ids
+                if event_id in self._journal_notifications and event_id not in pending_ids
+            ]
+            if retry:
+                self._pending_notifications = retry + self._pending_notifications
+                self._ensure_flush_task_locked()
+        logger.warning(
+            "[%s] OpenMail batch processing ended as %s; retained %d event(s) for retry",
+            self.name,
+            getattr(outcome, "value", str(outcome)),
+            len(event_ids),
+        )
+
+    def _was_seen(self, event_id: str) -> bool:
         now = time.time()
         if len(self._seen_event_ids) > DEDUP_MAX_SIZE:
             cutoff = now - 3600
             self._seen_event_ids = {k: v for k, v in self._seen_event_ids.items() if v > cutoff}
-        if event_id in self._seen_event_ids:
-            return True
-        self._seen_event_ids[event_id] = now
-        return False
+        return event_id in self._seen_event_ids
+
+    def _remember_seen(self, event_id: str) -> None:
+        self._seen_event_ids[event_id] = time.time()
 
     async def send(
         self,
@@ -614,6 +724,93 @@ def _default_channel_prompt() -> str:
     )
 
 
+def _notification_to_journal_row(notification: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(notification)
+    timestamp = row.get("timestamp")
+    if isinstance(timestamp, datetime):
+        row["timestamp"] = timestamp.isoformat()
+    return row
+
+
+def _notification_from_journal_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    notification = dict(row)
+    event_id = str(notification.get("event_id") or "").strip()
+    if not event_id:
+        raise ValueError("pending journal entry is missing event_id")
+    notification["event_id"] = event_id
+    notification["timestamp"] = _parse_ts(notification.get("timestamp"))
+    raw = notification.get("raw")
+    if not isinstance(raw, dict):
+        raise ValueError(f"pending journal entry {event_id!r} has invalid raw metadata")
+    raw = dict(raw)
+    raw["event_id"] = event_id
+    notification["raw"] = raw
+    return notification
+
+
+def _read_pending_journal(path: str) -> List[Dict[str, Any]]:
+    if not path:
+        raise ValueError("pending journal path is empty")
+    target = Path(path)
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError("pending journal has an unsupported schema")
+    rows = payload.get("notifications")
+    if not isinstance(rows, list):
+        raise ValueError("pending journal notifications must be a list")
+    recovered: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("pending journal contains a non-object notification")
+        notification = _notification_from_journal_row(row)
+        recovered[str(notification["event_id"])] = notification
+    return list(recovered.values())
+
+
+def _write_pending_journal(path: str, notifications: List[Dict[str, Any]]) -> None:
+    if not path:
+        raise ValueError("pending journal path is empty")
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(target.parent, 0o700)
+    except Exception:
+        pass
+    payload = {
+        "schema_version": 1,
+        "notifications": [_notification_to_journal_row(item) for item in notifications],
+    }
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+        try:
+            os.chmod(target, 0o600)
+        except Exception:
+            pass
+        try:
+            dir_fd = os.open(str(target.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except Exception:
+            pass
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _read_last_event_id(path: str) -> str:
     if not path:
         return ""
@@ -715,6 +912,7 @@ def _env_enablement() -> dict | None:
         "notification_batch_window_seconds": DEFAULT_NOTIFICATION_BATCH_WINDOW_SECONDS,
         "wait_for_idle_when_unsafe_busy": True,
         "last_event_id_path": "/opt/data/openmail-mailbox/last_event_id.txt",
+        "pending_journal_path": DEFAULT_PENDING_JOURNAL_PATH,
     }
 
 
