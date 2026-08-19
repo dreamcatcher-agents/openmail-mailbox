@@ -57,7 +57,7 @@ If the key is missing or blank, run OpenMail's setup or add `OPENMAIL_API_KEY`, 
 - `defaultInboxId` — default inbox UUID
 - `defaultInboxAddress` — default sender address
 - `defaultUsageMode` — `tool`, `notify`, or `channel`
-- `lastEventId` — optional WebSocket bridge replay cursor
+- `lastEventId` — optional legacy CLI bridge cursor; the REST-only Hermes watcher ignores it
 
 Do not print or commit this file. Keep it under the persistent Hermes home (`/opt/data/home` for Fly persona apps) with restrictive permissions where possible.
 
@@ -225,27 +225,27 @@ but CLI/skill changes are accepted only after their pinned versions and command
 contract pass the instance-spec checks. Never use `openmail update` as an
 in-place fleet mutation.
 
-Stale runtime-env pitfall: long-lived Hermes gateway/tool processes can keep old `OPENMAIL_INBOX_ID` / `OPENMAIL_ADDRESS` values in their inherited environment even after `/opt/data/.env.work` is updated. For one-off scripts, explicitly override `OPENMAIL_*` from `/opt/data/.env.work` instead of using `os.environ.setdefault` / `if (!process.env[k])`. For the live mailbox watcher, restart the gateway after changing the canonical OpenMail inbox so the process env, config, and plugin subscription converge.
+Stale runtime-env pitfall: long-lived Hermes gateway/tool processes can keep old `OPENMAIL_INBOX_ID` / `OPENMAIL_ADDRESS` values in their inherited environment even after `/opt/data/.env.work` is updated. For one-off scripts, explicitly override `OPENMAIL_*` from `/opt/data/.env.work` instead of using `os.environ.setdefault` / `if (!process.env[k])`. For the live mailbox watcher, restart the gateway after changing the canonical OpenMail inbox so the process env, poll configuration, and CLI state converge.
 
 It is safe to delete generated duplicate env files such as `/opt/data/.claude/openmail.env` once `/opt/data/.env.work` contains the OpenMail variables and the wrapper has been verified.
 
 For an AgentMail-to-OpenMail pilot, keep the established mailbox-session pattern but replace mailbox actions with CLI calls:
 
 ```text
-OpenMail WebSocket event
+OpenMail REST thread-index poll
+  -> changed-thread message-ID reconciliation
+  -> atomic local checkpoint + pending ownership
   -> stable Hermes mailbox-session notification
   -> agent uses this OpenMail skill
   -> agent calls openmail CLI for read/reply/send/mark-read
 ```
 
-`tool` mode is enough for polling and manual checks (`openmail threads list --is-read false`). `notify`/`channel` mode or a Hermes WebSocket adapter is only needed for automatic inbound initiation.
+The standalone Hermes watcher is REST-only. It completes one reconciliation before reporting ready, then polls every two minutes by default. Provider state is authoritative; do not add a second event-stream ingress path as a fallback, because dual ingress complicates deduplication and effect ownership.
 
 For remote Hermes/Fly migration tests, use `references/agentmail-openmail-exp-parity.md`: it captures the proven EXP setup flow, gateway-user ownership rules, real AgentMail→OpenMail and OpenMail→AgentMail parity checks, and the evidence standard (recipient mailbox storage plus gateway stable-session notification).
 
-For WebSocket adapters, persist replay cursors such as `last_event_id` with a crash-safe atomic write: write a same-directory temp file, flush/fsync it, publish with `os.replace`/POSIX rename, fsync the directory where supported, and keep the file owner-only with no secrets or message bodies.
+When verifying a Hermes OpenMail mailbox watcher after a cutover, confirm persistent config, OpenMail CLI/default inbox state, an initial successful REST reconciliation before readiness, a real inbound message becoming one stable-session notification within the poll bound, no duplicate on later polls, and restart catch-up. Treat any poll failure as healthy only when the gateway supervisor records the failure and reconnects; a configured inbox alone is not proof of live ingress.
 
-When verifying a Hermes OpenMail mailbox watcher after a cutover, use `references/hermes-openmail-websocket-verification.md`: confirm persistent config, OpenMail CLI/default inbox state, gateway WebSocket subscription logs, actual `Dispatching OpenMail event` lines, auto-loaded `openmail` skill, and a real outbound reply from the canonical address. Treat transient WebSocket disconnects as acceptable only if logs show reconnect + resubscribe to the same inbox; treat stale synthetic `session_chat_id` labels as a restart/reload convergence issue rather than proof the trigger is broken.
-
-For Hermes/Fly persona fleets, use `references/hermes-openmail-persona-fleet-drift.md` when an agent has an OpenMail address, OpenMail-selected manifest entry, or principal email pairing but inbound mail is not triggering Hermes. Key pitfall: email identity/pairing is not ingress. Do not accept `HERMES_AGENT_EMAIL`, an inbox existing in OpenMail, or correct pairing ledgers as proof that the live `openmail-mailbox` WebSocket watcher is installed, enabled, subscribed, and pointed at the right per-agent CLI state. Run the read-only fleet audit script from the instance spec repo when available and treat drift as a release blocker.
+For Hermes persona fleets, key pitfall: email identity/pairing is not ingress. Do not accept `HERMES_AGENT_EMAIL`, an inbox existing in OpenMail, or correct pairing ledgers as proof that the live `openmail-mailbox` REST poller is installed, enabled, reconciled, and pointed at the same inbox as the per-agent CLI state. Run the read-only fleet audit from the instance-spec repository when available and treat drift as a release blocker.
 
 For OpenMail custom domains, consult `references/custom-domain-setup.md` before touching DNS. Current OpenMail domain add/verify is dashboard-driven and requires Developer plan or above; the public API can create inboxes on an already-verified custom domain but does not expose domain creation. Verify the account can add the domain and copy the generated DKIM record before making registrar DNS changes. When the user has already created the domain and supplied the dashboard DNS table, use `references/custom-domain-cutover-pattern.md` for the DNS + custom-domain inbox + bidirectional mail-test sequence without requiring dashboard login.
