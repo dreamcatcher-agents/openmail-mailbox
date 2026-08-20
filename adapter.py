@@ -144,9 +144,6 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             ),
             DEFAULT_NOTIFICATION_BATCH_WINDOW_SECONDS,
         )
-        self._wait_for_idle_when_unsafe_busy = _bool_config(
-            extra.get("wait_for_idle_when_unsafe_busy"), True
-        )
         self._require_safe_busy_input_mode = _bool_config(
             extra.get("require_safe_busy_input_mode"), False
         )
@@ -646,7 +643,7 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
                 try:
                     async with self._dispatch_lock:
                         await self._respect_notification_min_interval()
-                        await self._wait_for_safe_busy_slot(source)
+                        await self._wait_for_idle_mailbox_session(source)
                         notifications = await self._drain_pending_notifications()
                         if not notifications:
                             return
@@ -778,11 +775,8 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             )
             await asyncio.sleep(delay)
 
-    async def _wait_for_safe_busy_slot(self, source) -> None:
+    async def _wait_for_idle_mailbox_session(self, source) -> None:
         busy_mode = _current_busy_input_mode()
-        if busy_mode in SAFE_BUSY_INPUT_MODES or not self._wait_for_idle_when_unsafe_busy:
-            return
-
         session_key = build_session_key(
             source,
             group_sessions_per_user=self.config.extra.get(
@@ -803,7 +797,7 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             now = time.monotonic()
             if now - last_log >= 60 or last_log == 0:
                 logger.info(
-                    "[%s] Waiting for mailbox session to become idle before dispatch because busy_input_mode=%s is not queue/steer",
+                    "[%s] Waiting for mailbox session to become idle before serialized dispatch; busy follow-ups can merge and lose per-batch acknowledgement ownership (busy_input_mode=%s)",
                     self.name,
                     busy_mode,
                 )
@@ -1495,7 +1489,6 @@ def _env_enablement() -> dict | None:
         "legacy_pending_journal_path": DEFAULT_LEGACY_PENDING_JOURNAL_PATH,
         "notification_min_interval_seconds": DEFAULT_NOTIFICATION_MIN_INTERVAL_SECONDS,
         "notification_batch_window_seconds": DEFAULT_NOTIFICATION_BATCH_WINDOW_SECONDS,
-        "wait_for_idle_when_unsafe_busy": True,
     }
 
 

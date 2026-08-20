@@ -47,6 +47,8 @@ There is no separate provider cursor or active pending journal. A legacy v1 pend
 
 A failed or cancelled turn retains exactly one durable retry. A successful turn removes its pending message IDs atomically. Because an external email side effect cannot be transacted with local acknowledgement, a crash after sending but before acknowledgement can replay a notification; the mailbox prompt therefore requires inspecting current thread state before sending.
 
+Dispatch is serialized against the stable mailbox session even when Hermes is configured for `queue` or `steer` busy input. The poller keeps newly discovered mail durably pending until the current mailbox turn is idle, then sends one owned batch. This prevents Hermes' busy follow-up merge from combining several batches under only the first batch's completion callback and leaving already-processed mail permanently pending.
+
 ## Verification
 
 Healthy startup logs include:

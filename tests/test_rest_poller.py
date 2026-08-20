@@ -216,7 +216,7 @@ def test_source_and_manifest_are_rest_only() -> None:
     assert "_connect_and_consume" not in source
     assert "_handle_ws_message" not in source
     assert "last_event_id" not in source
-    assert "version: 0.2.1" in manifest
+    assert "version: 0.2.2" in manifest
     assert "REST" in manifest
     assert "WebSocket" not in manifest
     assert "REST-only" in readme
@@ -489,6 +489,34 @@ def test_runtime_poll_failure_notifies_gateway_reconnect_supervisor() -> None:
             assert adapter.fatal_error[2] is True
             assert adapter.fatal_notified is True
             assert adapter._running is False
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("busy_mode", ["queue", "steer"])
+def test_dispatch_waits_for_mailbox_session_idle_in_safe_busy_modes(
+    monkeypatch, busy_mode: str
+) -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = _adapter(Path(tmp))
+            adapter._running = True
+            adapter._active_sessions["mailbox"] = object()
+            monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", busy_mode)
+
+            waiter = asyncio.create_task(
+                adapter._wait_for_idle_mailbox_session(
+                    SimpleNamespace(chat_id="mailbox")
+                )
+            )
+            await asyncio.sleep(0)
+            assert not waiter.done(), (
+                "a durable mailbox batch must not merge into an active turn; "
+                "merged follow-ups do not retain every batch acknowledgement"
+            )
+
+            adapter._active_sessions.pop("mailbox")
+            await asyncio.wait_for(waiter, timeout=1.5)
 
     asyncio.run(scenario())
 
