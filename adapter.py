@@ -522,11 +522,21 @@ class OpenMailMailboxAdapter(BasePlatformAdapter):
             headers=headers,
             allow_redirects=False,
         ) as response:
-            body = await response.content.read(limit + 1)
-            if len(body) > limit:
+            chunks: List[bytes] = []
+            total = 0
+            while total <= limit:
+                chunk = await response.content.read(
+                    min(64 * 1024, limit + 1 - total)
+                )
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            if total > limit:
                 raise RuntimeError(
                     f"OpenMail REST response exceeded {limit} bytes for {path}"
                 )
+            body = b"".join(chunks)
             if response.status < 200 or response.status >= 300:
                 raise RuntimeError(
                     f"OpenMail REST {path} returned HTTP {response.status}"

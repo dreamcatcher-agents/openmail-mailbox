@@ -1,7 +1,7 @@
 name: openmail-mailbox
 label: OpenMail Mailbox
 kind: platform
-version: 0.2.0
+version: 0.2.1
 description: >
   Outbound-only OpenMail REST-only mailbox poller for Hermes gateway persona agents.
   It reconciles lightweight thread summaries, fetches changed threads, dispatches

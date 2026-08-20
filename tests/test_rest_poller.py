@@ -134,6 +134,34 @@ def _adapter(root: Path, **extra):
     return adapter
 
 
+class _ChunkedContent:
+    def __init__(self, chunks: list[bytes]):
+        self._chunks = list(chunks)
+
+    async def read(self, _max_bytes: int = -1) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+
+class _Response:
+    def __init__(self, chunks: list[bytes], *, status: int = 200):
+        self.status = status
+        self.content = _ChunkedContent(chunks)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+
+class _HTTP:
+    def __init__(self, response: _Response):
+        self._response = response
+
+    def get(self, *_args, **_kwargs):
+        return self._response
+
+
 def _summary(count: int, at: str) -> dict:
     return {
         "id": "thread-1",
@@ -188,10 +216,42 @@ def test_source_and_manifest_are_rest_only() -> None:
     assert "_connect_and_consume" not in source
     assert "_handle_ws_message" not in source
     assert "last_event_id" not in source
-    assert "version: 0.2.0" in manifest
+    assert "version: 0.2.1" in manifest
     assert "REST" in manifest
     assert "WebSocket" not in manifest
     assert "REST-only" in readme
+
+
+def test_request_json_reads_chunked_response_through_eof() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = _adapter(Path(tmp))
+            adapter._http = _HTTP(
+                _Response(
+                    [
+                        b'{"data":[{"id":"message-1",',
+                        b'"direction":"inbound"}],',
+                        b'"pagination":{"hasMore":false}}',
+                    ]
+                )
+            )
+
+            payload = await adapter._request_json("/v1/inboxes/inbox-1/messages", max_bytes=256)
+            assert payload["data"][0]["id"] == "message-1"
+
+    asyncio.run(scenario())
+
+
+def test_request_json_enforces_bound_across_multiple_chunks() -> None:
+    async def scenario() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            adapter = _adapter(Path(tmp))
+            adapter._http = _HTTP(_Response([b'{"data":', b'[],' + b' ' * 16, b'"x":1}']))
+
+            with pytest.raises(RuntimeError, match="response exceeded 12 bytes"):
+                await adapter._request_json("/v1/inboxes/inbox-1/messages", max_bytes=12)
+
+    asyncio.run(scenario())
 
 
 def test_first_poll_takes_a_stable_ids_only_baseline_without_dispatching() -> None:

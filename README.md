@@ -36,6 +36,8 @@ Configure `OPENMAIL_API_KEY`, `OPENMAIL_INBOX_ID`, and `OPENMAIL_ADDRESS` in `/o
 
 The provider mailbox is authoritative. On first boot the adapter brackets a complete inbound-message ID scan with two thread-index snapshots and accepts the baseline only when both snapshots match. Existing mail is baselined rather than dispatched.
 
+REST response bodies are read through end-of-stream in bounded chunks and rejected when they exceed the endpoint-specific cap. This keeps large or transfer-chunked mailbox reconciliations complete without turning the safety bound into an unbounded read.
+
 Later polls fetch only new or changed threads. Before dispatch, one owner-only atomic state file records both:
 
 1. Per-thread message count, last-message timestamp, and known inbound message IDs.
